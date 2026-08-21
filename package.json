@@ -1,0 +1,16 @@
+{
+  "name": "bnbbang-engine",
+  "version": "3.0.0",
+  "description": "BNBBANG 镜像宇宙的推导链：BNB 区块哈希 → 创世参数 → 结局 / 稀有度 / cardHash，零依赖，可复算",
+  "main": "lib/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node engine/test.js && node test/derivation.test.js",
+    "recompute": "node tools/recompute.js",
+    "verify": "node tools/verify-onchain.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
