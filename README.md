@@ -36,9 +36,10 @@ BNBBANG 镜像宇宙的推导链，独立成仓：**一个 BNB 区块哈希 → 
 ## 复算一个宇宙
 
 ```
-npm test                                          # 292 + 推导链测试，全绿才说明这台机器算得对
+npm test                                          # 292 + 推导链测试（含 3-2/3-3 钉死向量），全绿才说明这台机器算得对
 node tools/recompute.js <0x区块哈希>              # 原生卡
-node tools/recompute.js <0x区块哈希> --ops 0x…    # 拯救 / 造物卡
+node tools/recompute.js <0x区块哈希> --ops 0x…    # 拯救 / 造物卡（默认 cardShape 3）
+node tools/recompute.js <0x区块哈希> --ops 0x… --shape 2   # 按老算法验 cardShape=2 的卡
 node tools/recompute.js <0x区块哈希> --json       # 整份 card，可直接与服务端 /api/card/<哈希> 回包 diff
 ```
 
@@ -47,7 +48,7 @@ node tools/recompute.js <0x区块哈希> --json       # 整份 card，可直接�
 ```
 $ node tools/recompute.js 0xca00b6c467818ea0fafdc417f9cb902ea9db297e1ef0ad3961997f621adfce4c
 == 原生卡（blockHash 唯一决定）
-derivationVersion  3    cardShape 2    engine 2.4.0
+derivationVersion  3    cardShape 3    engine 2.4.0
 tier               whisper（微澜）scale=0.15 p=0.5
 outcome            #9 OBSERVERS_POSSIBLE（可能诞生观察者）
 rarity             #0 S
@@ -63,7 +64,7 @@ cardHash           0xf0519ad4ab2556955f9aedb6527f98739f4e1ba090eecb0d3f5686edf79
 ```
 
 这个 cardHash 与链上 `cardOf(1)`、与服务端 `/api/bang` 回包里的 `cardHash` 三者逐位相同。
-`--json` 的输出与服务端 `/api/card/<哈希>` 回包逐字段比：`version` 同为 `3-2`，结局、维度、稀有度、常数、uInt 全同，
+`--json` 的输出与服务端 `/api/card/<哈希>` 回包逐字段比：`version` 同为 `3-3`，结局、维度、稀有度、常数、uInt 全同，
 本仓库多一个 `frameSlots`（三个专用槽，服务端不单独列）；个别浮点参数可能差 1 ulp，见「确定性保证」。
 
 ## 对链
@@ -144,8 +145,12 @@ cardHash            0xf5f46edc172b2888e6793443f9e8dcaef6b5d448305a2ddf6a5c8ce24d
    keccak256(abi.encode(bytes32 blockHash, uint32[22] uInt, uint32 slot200, uint32 slot201, uint32 slot202,
                         uint8 outcome, uint8 rarity, uint32 derivationVersion))
    ```
-   拯救 / 造物卡（参数已经离开槽位，改对归一化后的参数取字符串指纹）：
+   拯救 / 造物卡（参数已经离开槽位；按卡上 `cardShape` 选序列化，缺字段当 2）：
    ```
+   # cardShape 3（现役）：unit 空间 uint32，不再 ToString
+   fp       = keccak256(abi.encode(string[] keys（字典序）, uint32[] unitInt))
+            unitInt[i] = round(clamp(toUnit(k, v), 0, 1) * 1e9)
+   # cardShape 2（老卡）：
    fp       = keccak256(abi.encode(string[] keys（字典序）, string[] String(value)))
    cardHash = keccak256(abi.encode(bytes32 blockHash, bytes32 fp, uint8 outcome, uint8 rarity, uint32 derivationVersion))
    ```
@@ -158,7 +163,7 @@ cardHash            0xf5f46edc172b2888e6793443f9e8dcaef6b5d448305a2ddf6a5c8ce24d
 | 22 个整数槽 + 3 个专用槽（原生卡） | 参数的浮点值（原生卡；由槽位唯一决定，不必再签） |
 | 结局序号、稀有度 | 维度 D（由结局与稀有度间接体现） |
 | derivationVersion | cardShape、engineVersion 字符串 |
-| 干预后的全部参数（拯救 / 造物卡，经 String() 指纹） | 谁铸的、什么时候铸的、用什么付的、费用 |
+| 干预后的全部参数（拯救 / 造物卡：shape 3 经 uint32 unitInt，shape 2 经 String()） | 谁铸的、什么时候铸的、用什么付的、费用 |
 
 ## 确定性保证
 
@@ -168,11 +173,13 @@ cardHash            0xf5f46edc172b2888e6793443f9e8dcaef6b5d448305a2ddf6a5c8ce24d
   「服务端在这个版本下算出的声明」一起签进去，而不是把浮点参数签进去。
   **这不是假设，是实测到的**：2026-08-22 把服务端 `/api/card` 回包与本机（Windows，Node 24）的复算逐字段比，3 个哈希里有 2 个各有一个参数差 1 ulp
   （#1 的 `As`：`…6033665e-9` 对 `…6033668e-9`；#6 的 `higgsVev`：`262.2510285224804` 对 `…248034`），都是 `fromUnit` 里 `Math.pow(10, …)` 的最后一位。
-  结局、维度、稀有度、cardHash 三个哈希全部一致 —— 原生卡的指纹设计就是为了扛住这种差异。
-- 拯救 / 造物卡的指纹**扛不住**：它对归一化后的参数取 `String(value)`，差 1 ulp 就是另一个字符串、另一个 cardHash。
-  #12 能在本机复算成功，是因为那个哈希的 23 个参数恰好在两边逐位相同；换一个落在 #1 或 #6 那种哈希上的干预，本机就会算出与链上不同的指纹，
-  而结局、维度可能完全一样。所以 `verify-onchain.js` 对干预卡报"不一致"时，先看结局与稀有度是否一致，再怀疑是 ulp 还是真的被改过；
-  彻底的解法要等下一个 derivationVersion 把干预卡的指纹也改成整数基（原生 22 槽 + ops 里的整数刻度），这需要服务端与本仓库同步升版。
+  结局、维度、稀有度、cardHash 三个哈希全部一致 —— 原生卡的指纹设计就是为了扛住这种差异。原生卡公式未变。
+- 拯救 / 造物卡现役 **cardShape 3**：不再 `String(float)`。按参数名字典序，把每个值量化到 ops 同一套 unit 空间的 uint32
+  （×1e9，四舍五入夹到 [0, 1e9]），再 `abi.encode(string[], uint32[])`。1e9 以内的整数 double 能精确表示，
+  跨平台 `Math.pow` / `log10` 差 1 ulp 仍落到同一个 uint32，指纹不变 —— 这就是 shape 3 要消掉的跨平台浮点 1 ulp 问题。
+  老卡（缺 `cardShape` 或 `cardShape=2`）仍按旧算法验：`String(value)` 进 `abi.encode(string[], string[])`。
+  `cardHashFromCard` 按**卡上**的字段选算法；`verify-onchain.js` 对链上干预卡先试现役 3，对不上再试 2。
+  `recompute.js --shape 2|3`（默认 3）可显式指定。cardShape 升到 3 **不进**指纹字段本身，只切换干预/造物卡的序列化。
   ops 里的位置本身是 `n / 1e9` 的整数刻度，服务端**先量化再模拟**，复算的人走同一条路；这一步没有平台差异。
 - 同一个输入永远同一个输出：派生与引擎不读时间、不读随机数、不读环境。`register: false` 关掉了引擎里的目录计数，
   `simulate` 是纯函数。
@@ -185,8 +192,8 @@ cardHash            0xf5f46edc172b2888e6793443f9e8dcaef6b5d448305a2ddf6a5c8ce24d
 - 规则：**版本一升，链上老卡不重算**。`cardOf` 是签名那一刻那个版本下的指纹，新代码算不出它，也不该算出它 ——
   版本号就在指纹里，新旧两套卡不会混。服务端对复算不出的老卡按 CARD_MISMATCH 处理，元数据退成「盖了章、复算不出、不给图」。
   要复现老卡，checkout 对应版本的代码：本仓库版本号的主版本 = derivationVersion，每次升版打 tag。
-- `cardShape`（现为 2）是 card JSON 的**结构**版本：字段增减、数值不变，**不进 cardHash**。
-  服务端 `/api/card` 回包里的 `version: "3-2"` 就是这两个数。
+- `cardShape`（现为 3）是 card JSON 的**结构 / 干预指纹序列化**版本：**不进** cardHash 字段列表，但决定干预/造物卡用哪套序列化。
+  2 = `String(float)`（仅验老卡）；3 = uint32 unitInt（现役）。服务端 `/api/card` 回包里的 `version: "3-3"` 就是这两个数。
 
 ## 与拯救 / 造物的关系
 
@@ -206,7 +213,7 @@ cardHash            0xf5f46edc172b2888e6793443f9e8dcaef6b5d448305a2ddf6a5c8ce24d
 ```
 npm test
 # node engine/test.js            292 项：参数表、派生常数、演化、结局、N 体、目录、UMD 加载
-# node test/derivation.test.js   推导链：keccak 向量、槽位算式、ABI 编码对 ethers、12 枚链上卡、ops 编解码、#12 的拯救复算、确定性
+# node test/derivation.test.js   推导链：keccak 向量、槽位算式、ABI 编码对 ethers、12 枚链上卡、ops 编解码、#12 的拯救复算、3-2/3-3 钉死向量、确定性
 ```
 
 ## 许可证

@@ -83,6 +83,19 @@ function same(a, b) { return String(a).toLowerCase() === String(b).toLowerCase()
 function line(k, v) { console.log(k.padEnd(20) + v); }
 function verdict(ok, msg) { console.log((ok ? '\n✓ ' : '\n✗ ') + msg); process.exit(ok ? 0 : 1); }
 
+function shapeNote(sh) {
+  return Number(sh) <= 2 ? '（老卡 String(float)）' : '（现役 uint32 unitInt）';
+}
+
+/** 链上不存 cardShape。先试现役 3，对不上再试老卡 2，按能对上链上 cardOf 的那套算。 */
+function recomputeByCardShape(blockHash, ops, wantHash) {
+  const r3 = L.recomputeWithOps(blockHash, ops, 3);
+  if (same(r3.cardHash, wantHash)) return { r: r3, shape: 3 };
+  const r2 = L.recomputeWithOps(blockHash, ops, 2);
+  if (same(r2.cardHash, wantHash)) return { r: r2, shape: 2 };
+  return { r: r3, shape: 3 };
+}
+
 /** 从 intervene(...) 的 calldata 里取 ops（第 7 个参数，动态 bytes） */
 function opsFromInterveneInput(input) {
   if (!input.startsWith(SEL.intervene)) throw new Error('这笔交易不是 intervene()：选择器 ' + input.slice(0, 10) + '，期望 ' + SEL.intervene);
@@ -172,11 +185,13 @@ async function verifyNative() {
     verdict(false, '拿不到 ops。到区块浏览器找这枚 token 最后一笔 Intervened 事件（topic0 ' + TOPIC_INTERVENED + '），把交易哈希用 --tx 传进来');
   }
 
-  const r = L.recomputeWithOps(onchain.blockHash, ops);
+  const picked = recomputeByCardShape(onchain.blockHash, ops, onchain.cardHash);
+  const r = picked.r;
   console.log('\n== 本地  derive(blockHash) + ops → 引擎');
   line('ops 来源', src);
   line('ops', ops);
   line('opsHash', r.opsHash);
+  line('cardShape', String(r.card.cardShape) + shapeNote(r.card.cardShape));
   r.card.intervention.moved.forEach((m) => line('  [' + m.index + '] ' + m.key, m.from + ' → ' + m.to + '（unit ' + m.unitInt + '/1e9）'));
   line('outcome', '#' + r.card.outcome.index + ' ' + r.card.outcome.id);
   line('rarity', '#' + r.card.rarity.index + ' ' + r.card.rarity.name + (r.card.dimension ? '    D=' + r.card.dimension.D : ''));
@@ -184,8 +199,9 @@ async function verifyNative() {
   const ok = same(r.cardHash, onchain.cardHash) && r.card.outcome.index === onchain.outcome && r.card.rarity.index === onchain.rarity;
   verdict(ok, ok
     ? '干预卡：只用 blockHash + ops 复算出的 cardHash 与链上 cardOf 逐位相同' + (r.card.intervention.rescued ? '（从 ' + r.card.intervention.from.outcome + ' 救活）' : '')
+      + '（cardShape=' + r.card.cardShape + '）'
     : '复算结果与链上不一致：cardHash ' + (same(r.cardHash, onchain.cardHash) ? '同' : '异') + '，outcome ' + r.card.outcome.index + ' vs ' + onchain.outcome + '，rarity ' + r.card.rarity.index + ' vs ' + onchain.rarity
-      + '。可能是 ops 不是最后一笔，或者本地引擎版本与签名时不同（derivationVersion 见 README）');
+      + '。已按 cardShape 3 再 2 各算一遍。可能是 ops 不是最后一笔，或者本地引擎版本与签名时不同（derivationVersion / cardShape 见 README）');
 }
 
 async function verifyCrafted() {
@@ -207,16 +223,18 @@ async function verifyCrafted() {
   line('paid', onchain.paid.toString() + ' wei BANG');
   if (!opt.ops) verdict(false, '造物的 ops 不在链上（只存 opsHash），请用 --ops 传入持有者/服务端给的 ops；链上的 opsHash 会验证它没被改过');
 
-  const r = L.recomputeWithOps(onchain.originHash, opt.ops);
+  const picked = recomputeByCardShape(onchain.originHash, opt.ops, onchain.cardHash);
+  const r = picked.r;
   console.log('\n== 本地  derive(originHash) + ops → 引擎');
   line('opsHash', r.opsHash + (same(r.opsHash, onchain.opsHash) ? '  = 链上' : '  ≠ 链上（ops 不是签名时那份）'));
+  line('cardShape', String(r.card.cardShape) + shapeNote(r.card.cardShape));
   r.card.intervention.moved.forEach((m) => line('  [' + m.index + '] ' + m.key, m.from + ' → ' + m.to + '（unit ' + m.unitInt + '/1e9）'));
   line('outcome', '#' + r.card.outcome.index + ' ' + r.card.outcome.id);
   line('rarity', '#' + r.card.rarity.index + ' ' + r.card.rarity.name + (r.card.dimension ? '    D=' + r.card.dimension.D : ''));
   line('cardHash', r.cardHash);
   const ok = same(r.opsHash, onchain.opsHash) && same(r.cardHash, onchain.cardHash)
     && r.card.outcome.index === onchain.outcome && r.card.rarity.index === onchain.rarity;
-  verdict(ok, ok ? '造物卡：opsHash 与 cardHash 都与链上逐位相同' : '复算结果与链上不一致');
+  verdict(ok, ok ? '造物卡：opsHash 与 cardHash 都与链上逐位相同（cardShape=' + r.card.cardShape + '）' : '复算结果与链上不一致（已按 cardShape 3 再 2 各算一遍）');
 }
 
 (opt.crafted ? verifyCrafted() : verifyNative()).catch((e) => {

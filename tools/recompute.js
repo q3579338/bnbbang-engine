@@ -4,8 +4,10 @@
  *
  *   node tools/recompute.js <区块哈希>                 原生卡：参数、结局、稀有度、cardHash
  *   node tools/recompute.js <区块哈希> --ops 0x…       拯救/造物卡：按 ops 把参数搬到位再算
+ *   node tools/recompute.js <区块哈希> --ops 0x… --shape 2   按老算法（String(float)）验 cardShape=2 的卡
  *   node tools/recompute.js <区块哈希> --json          整份 card 按 JSON 输出（可直接 diff 服务端 /api/card 回包）
  *
+ * --shape 2|3 只影响拯救/造物卡的 cardHash 算法，默认 3。原生卡公式不变。
  * 不联网、不读任何存档。同一个输入在任何机器上给出同一个 cardHash。
  */
 'use strict';
@@ -14,16 +16,21 @@ const L = require(path.join(__dirname, '..', 'lib', 'index.js'));
 
 function usage(msg) {
   if (msg) console.error('错误：' + msg + '\n');
-  console.error('用法：node tools/recompute.js <0x区块哈希> [--ops 0x…] [--json]');
+  console.error('用法：node tools/recompute.js <0x区块哈希> [--ops 0x…] [--shape 2|3] [--json]');
   process.exit(2);
 }
 
 const argv = process.argv.slice(2);
-let hash = null, opsHex = null, asJson = false;
+let hash = null, opsHex = null, asJson = false, shape = L.CARD_SHAPE;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--ops') { opsHex = argv[++i]; if (!opsHex) usage('--ops 后面要跟十六进制'); }
   else if (a === '--json') asJson = true;
+  else if (a === '--shape') {
+    const s = argv[++i];
+    if (s !== '2' && s !== '3') usage('--shape 只要 2 或 3');
+    shape = Number(s);
+  }
   else if (a === '-h' || a === '--help') usage();
   else if (!hash) hash = a;
   else usage('多余的参数：' + a);
@@ -40,7 +47,8 @@ function fmt(v) {
 function printCard(title, card, cardHash, extra) {
   console.log('== ' + title);
   console.log('blockHash          ' + card.blockHash);
-  console.log('derivationVersion  ' + card.derivationVersion + '    cardShape ' + L.CARD_SHAPE + '    engine ' + card.engineVersion);
+  const sh = card.cardShape != null ? card.cardShape : L.CARD_SHAPE;
+  console.log('derivationVersion  ' + card.derivationVersion + '    cardShape ' + sh + '    engine ' + card.engineVersion);
   console.log('tier               ' + card.tier.id + '（' + card.tier.name + '）scale=' + card.tier.scale + ' p=' + card.tier.p);
   console.log('outcome            #' + card.outcome.index + ' ' + card.outcome.id + '（' + card.outcome.name + '）');
   console.log('rarity             #' + card.rarity.index + ' ' + card.rarity.name);
@@ -65,14 +73,14 @@ function printCard(title, card, cardHash, extra) {
 
 if (!opsHex) {
   const { card, cardHash } = L.buildCard(h, null);
-  if (asJson) { console.log(JSON.stringify({ card, cardHash, version: card.derivationVersion + '-' + L.CARD_SHAPE }, null, 2)); process.exit(0); }
+  if (asJson) { console.log(JSON.stringify({ card, cardHash, version: card.derivationVersion + '-' + card.cardShape }, null, 2)); process.exit(0); }
   printCard('原生卡（blockHash 唯一决定）', card, cardHash);
   process.exit(0);
 }
 
 let r;
-try { r = L.recomputeWithOps(h, opsHex); } catch (e) { usage(e.message); }
-if (asJson) { console.log(JSON.stringify({ card: r.card, cardHash: r.cardHash, opsHash: r.opsHash, nativeCardHash: r.native.cardHash }, null, 2)); process.exit(0); }
+try { r = L.recomputeWithOps(h, opsHex, shape); } catch (e) { usage(e.message); }
+if (asJson) { console.log(JSON.stringify({ card: r.card, cardHash: r.cardHash, opsHash: r.opsHash, nativeCardHash: r.native.cardHash, version: r.card.derivationVersion + '-' + r.card.cardShape }, null, 2)); process.exit(0); }
 console.log('== 原生卡');
 console.log('outcome            #' + r.native.card.outcome.index + ' ' + r.native.card.outcome.id + '    rarity ' + r.native.card.rarity.name
   + (r.native.card.dimension ? '    D=' + r.native.card.dimension.D : ''));

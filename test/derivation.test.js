@@ -9,6 +9,7 @@
  * ABI 编码器和引擎要是差一个字节，这里就红。
  */
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const L = require(path.join(__dirname, '..', 'lib', 'index.js'));
 const B = L.bnbhash, P = L.params, ABI = L.abi;
@@ -86,13 +87,16 @@ eq(ABI.encodeStringPair(['a', 'bb'], ['x', 'yy']).length, 2 + 64 * 16, '……�
 eq(ABI.keccak256(ABI.encodeStringPair(['alpha', 'omegaLambda', '这是中文'], ['0.007297352569311', '6.9e-10', '1e+21'])),
   '0x6019e17df85dfeeb36fe8d049db08444d6d70315e6278ded53e8a341d5de4a1a', '含 UTF-8 多字节与科学计数法字符串的指纹 = ethers');
 eq(ABI.keccak256(ABI.encodeStringPair([], [])), '0xc6df19a9e5cc2e1575f8bc5ee97cc5b352e49114c858bb010d9874784ccd5fc7', '空数组对 = ethers');
+eq(ABI.keccak256(ABI.encodeStringUint32Pair(['a', 'bb'], [1, 2])), '0xa32e998e8d639bbd8b13ab77fda16f469e7dd0b98ee607d9d9d436fb4dd7c389',
+  'keccak256(abi.encode(string[] ["a","bb"], uint32[] [1,2])) = ethers（shape 3 用的那条）');
+eq(ABI.encodeStringUint32Pair(['a', 'bb'], [1, 2]).length, 2 + 64 * 12, '……编码长 12 个字（2 外层偏移 + string[] 7 字 + uint32[] 3 字）');
 eq(ABI.encUint(255), '00000000000000000000000000000000000000000000000000000000000000ff', 'uint 左补零到 32 字节');
 throws(() => ABI.encUint(-1), /越界/, '负数被拒');
 throws(() => ABI.encBytes32('0x12'), /bytes32/, '非 32 字节被拒');
 
 section('原生卡：12 枚链上 token 的 cardHash / outcome / rarity');
 eq(L.DERIVATION_VERSION, 3, 'DERIVATION_VERSION = 3');
-eq(L.CARD_SHAPE, 2, 'CARD_SHAPE = 2');
+eq(L.CARD_SHAPE, 3, 'CARD_SHAPE = 3');
 CHAIN.forEach(([id, hash, num, outcome, rarity, cardOf]) => {
   const { card, cardHash } = L.buildCard(hash, num);
   ok(cardHash === cardOf && card.outcome.index === outcome && card.rarity.index === rarity,
@@ -106,6 +110,7 @@ CHAIN.forEach(([id, hash, num, outcome, rarity, cardOf]) => {
   eq(c.card.blockNumber, null, '不给 blockNumber 时记 null');
   ok(a.card.uInt.length === 22 && a.card.frameSlots.uG === d.frame.uG, 'card 带出 uInt[22] 与三个专用槽');
   eq(a.card.derivationVersion, 3, 'card.derivationVersion = 3');
+  eq(a.card.cardShape, 3, '原生卡带 cardShape=3（结构字段；cardHash 仍是 uInt 整数基）');
   eq(a.card.engineVersion, L.engine.VERSION || a.card.engineVersion, 'card.engineVersion 来自引擎');
   // 手算一遍 cardHash 的算式
   const words = [ABI.encBytes32(h1)].concat(d.uInt.map(ABI.encUint))
@@ -159,25 +164,107 @@ section('干预卡：只用 blockHash + ops 复算 #12');
   const nat = L.buildCard(T12.blockHash, null);
   ok(nat.cardHash === T12.nativeCardHash && nat.card.outcome.index === T12.nativeOutcome && nat.card.rarity.index === T12.nativeRarity,
     '#12 原生：' + L.OUTCOME_ORDER[T12.nativeOutcome] + '/' + L.RARITY_NAME[T12.nativeRarity] + ' ' + T12.nativeCardHash.slice(0, 12) + '…');
+  const r2 = L.recomputeWithOps(T12.blockHash, T12.ops, 2);
+  eq(r2.cardHash, T12.cardOf, '★ 复算 cardHash（shape 2）= 链上 cardOf(12)');
+  eq(r2.card.cardShape, 2, '老卡复算 stamped cardShape=2');
+  ok(r2.card.outcome.index === T12.outcome && r2.card.rarity.index === T12.rarity, '复算结局 #9 OBSERVERS_POSSIBLE、稀有度 S，与链上一致');
+  eq(r2.opsHash, T12.opsHash, 'opsHash 一致');
+  ok(r2.card.intervention.rescued === true && r2.card.intervention.from.outcome === 'UNSTABLE_ORBITS', '标记为"从 UNSTABLE_ORBITS 救活"');
+  ok(r2.card.intervention.moved.length === 1 && r2.card.intervention.moved[0].key === 'stringGasT', '只动了 stringGasT');
+  ok(r2.card.params.stringGasT === P.fromUnit('stringGasT', 0.334249106), '干预后的 stringGasT = fromUnit(0.334249106)');
+  ok(Object.keys(r2.card.params).every((k) => k === 'stringGasT' || r2.card.params[k] === nat.card.params[k]), '其余参数与原生逐位相同');
+  // 算式（shape 2 = 链上签发时那套 String(float)）
+  const keys = Object.keys(r2.card.params).sort();
+  const fp2 = ABI.keccak256(ABI.encodeStringPair(keys, keys.map((k) => String(r2.card.params[k]))));
+  eq(ABI.keccak256(ABI.encodeWords([ABI.encBytes32(T12.blockHash), ABI.encBytes32(fp2), ABI.encUint(9), ABI.encUint(0), ABI.encUint(3)])), r2.cardHash,
+    'shape 2 cardHash = keccak256(blockHash ‖ keccak256(abi.encode(keys[], String(values[]))) ‖ outcome ‖ rarity ‖ version)');
+  eq(L.cardHashOf(T12.blockHash, r2.card.params, 9, 0, 2), T12.cardOf, '显式 shape 2 对上链上老卡');
+  eq(L.cardHashFromCard({ blockHash: T12.blockHash, params: r2.card.params, outcome: { index: 9 }, rarity: { index: 0 } }), T12.cardOf,
+    '缺 cardShape 的老卡按 shape=2 验');
   const r = L.recomputeWithOps(T12.blockHash, T12.ops);
-  eq(r.cardHash, T12.cardOf, '★ 复算 cardHash = 链上 cardOf(12)');
-  ok(r.card.outcome.index === T12.outcome && r.card.rarity.index === T12.rarity, '复算结局 #9 OBSERVERS_POSSIBLE、稀有度 S，与链上一致');
-  eq(r.opsHash, T12.opsHash, 'opsHash 一致');
-  ok(r.card.intervention.rescued === true && r.card.intervention.from.outcome === 'UNSTABLE_ORBITS', '标记为"从 UNSTABLE_ORBITS 救活"');
-  ok(r.card.intervention.moved.length === 1 && r.card.intervention.moved[0].key === 'stringGasT', '只动了 stringGasT');
-  ok(r.card.params.stringGasT === P.fromUnit('stringGasT', 0.334249106), '干预后的 stringGasT = fromUnit(0.334249106)');
-  ok(Object.keys(r.card.params).every((k) => k === 'stringGasT' || r.card.params[k] === nat.card.params[k]), '其余参数与原生逐位相同');
-  // 算式
-  const keys = Object.keys(r.card.params).sort();
-  const fp = ABI.keccak256(ABI.encodeStringPair(keys, keys.map((k) => String(r.card.params[k]))));
-  eq(ABI.keccak256(ABI.encodeWords([ABI.encBytes32(T12.blockHash), ABI.encBytes32(fp), ABI.encUint(9), ABI.encUint(0), ABI.encUint(3)])), r.cardHash,
-    'cardHash = keccak256(blockHash ‖ keccak256(abi.encode(keys[], values[])) ‖ outcome ‖ rarity ‖ version)');
-  eq(L.cardHashOf(T12.blockHash, r.card.params, 9, 0), r.cardHash, 'cardHashOf 与 recomputeWithOps 同一份实现');
+  eq(r.card.cardShape, 3, '缺省复算 cardShape=3');
+  ok(r.cardHash !== T12.cardOf, 'shape 3 与链上老卡指纹不同');
+  eq(L.cardHashOf(T12.blockHash, r.card.params, 9, 0), r.cardHash, 'cardHashOf 缺省与 recomputeWithOps 同一份（shape 3）');
+  const units = keys.map((k) => {
+    const n = P.toUnit(k, r.card.params[k]);
+    return L.quantizeUnit(typeof n === 'number' && isFinite(n) ? n : 0);
+  });
+  const fp3 = ABI.keccak256(ABI.encodeStringUint32Pair(keys, units));
+  eq(ABI.keccak256(ABI.encodeWords([ABI.encBytes32(T12.blockHash), ABI.encBytes32(fp3), ABI.encUint(9), ABI.encUint(0), ABI.encUint(3)])), r.cardHash,
+    'shape 3 cardHash = keccak256(blockHash ‖ keccak256(abi.encode(keys[], uint32[] unitInt)) ‖ outcome ‖ rarity ‖ version)');
+  eq(L.cardHashFromCard(r.card), r.cardHash, '卡上 cardShape=3 按整数基验');
   // 改一个刻度就是另一个宇宙
   const alt = L.recomputeWithOps(T12.blockHash, '0x1413ec3c91');
   ok(alt.cardHash !== r.cardHash, 'ops 改一个刻度 → 另一个 cardHash');
   // 与 applyOpsHex 的等价
   ok(JSON.stringify(L.applyOpsHex(nat.card.params, T12.ops)) === JSON.stringify(r.card.params), 'applyOpsHex 给出同一份参数');
+}
+
+section('干预/造物卡指纹：3-2 String vs 3-3 整数基');
+/* 钉死给开源引擎仓对照。输入不依赖 derive/simulate，只测序列化本身。
+   向量原样搬自 mu/server/selftest.js。 */
+{
+  const VEC_H = '0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b';
+  const VEC_P = { alpha: 0.007, omegaLambda: 0.685, generations: 3 };
+  const H32 = '0x4e834e0608630516257d85a3d970033469eea7c5561f6a15f44e5d42cc2af822';
+  const H33 = '0xd88d1f23c4caa77f2c2d63789dbb6df1212cd2339946f181cff0c92c1a646087';
+  eq(L.cardHashOf(VEC_H, VEC_P, 9, 0, 2), H32, '3-2 固定向量（String(float) 旧算法）');
+  eq(L.cardHashOf(VEC_H, VEC_P, 9, 0, 3), H33, '3-3 固定向量（uint32 unitInt 新算法）');
+  eq(L.cardHashOf(VEC_H, VEC_P, 9, 0), H33, '缺省 shape 走 3');
+  ok(H32 !== H33, '同一输入 3-2 与 3-3 指纹不同');
+  const ulp = { alpha: 0.007 + Number.EPSILON, omegaLambda: 0.685, generations: 3 };
+  ok(L.cardHashOf(VEC_H, ulp, 9, 0, 2) !== H32, '3-2：1 ulp 就换指纹（旧病）');
+  eq(L.cardHashOf(VEC_H, ulp, 9, 0, 3), H33, '3-3：1 ulp 仍同一指纹（量化到同一 uint32）');
+  const { card: nat0 } = L.buildCard(VEC_H, 1);
+  eq(L.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 2),
+    '0x6b77d70155ae079d96e6ca03ca72a0aeadbf7f82fa7d4174be800fbc6cf117ce', 'H[0] 原生卡 3-2 钉死');
+  eq(L.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 3),
+    '0xe6d5cfd965a290b7c0200f63a9a8f50449cd0a92416a35b4e60e5095325fff43', 'H[0] 原生参数 3-3 钉死');
+  ok(L.buildCard(VEC_H, 1).cardHash !== L.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 3),
+    '原生 cardHash 仍是 uInt 基，不等于干预指纹');
+  const oldCard = {
+    blockHash: VEC_H, params: VEC_P, outcome: { index: 9 }, rarity: { index: 0 }
+  };
+  eq(L.cardHashFromCard(oldCard), H32, '缺 cardShape 的老卡按 shape=2 验');
+  eq(L.cardHashFromCard(Object.assign({}, oldCard, { cardShape: 3 })), H33, '卡上 cardShape=3 按整数基验');
+}
+
+section('与 mu/server/intervene.js 交叉对照（只读）');
+{
+  const muPath = path.join(__dirname, '..', '..', 'mu', 'server', 'intervene.js');
+  let mu = null, muErr = null;
+  if (!fs.existsSync(muPath)) {
+    muErr = new Error('文件不存在：' + muPath);
+  } else {
+    try { mu = require(muPath); } catch (e) { muErr = e; }
+  }
+  if (!mu || typeof mu.cardHashOf !== 'function') {
+    ok(false, '交叉对照：加载 mu/server/intervene.js 失败（' + (muErr && muErr.message) + '）');
+  } else {
+    const VEC_H = '0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b';
+    const VEC_P = { alpha: 0.007, omegaLambda: 0.685, generations: 3 };
+    eq(L.cardHashOf(VEC_H, VEC_P, 9, 0, 2), mu.cardHashOf(VEC_H, VEC_P, 9, 0, 2), '与 mu cardHashOf shape=2 逐字节一致');
+    eq(L.cardHashOf(VEC_H, VEC_P, 9, 0, 3), mu.cardHashOf(VEC_H, VEC_P, 9, 0, 3), '与 mu cardHashOf shape=3 逐字节一致');
+    eq(L.cardHashOf(VEC_H, VEC_P, 9, 0), mu.cardHashOf(VEC_H, VEC_P, 9, 0), '与 mu cardHashOf 缺省逐字节一致');
+    const { card: nat0 } = L.buildCard(VEC_H, 1);
+    eq(L.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 2),
+      mu.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 2),
+      'H[0] 原生参数 shape=2 与 mu 逐字节一致');
+    eq(L.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 3),
+      mu.cardHashOf(VEC_H, nat0.params, nat0.outcome.index, nat0.rarity.index, 3),
+      'H[0] 原生参数 shape=3 与 mu 逐字节一致');
+    const oldCard = { blockHash: VEC_H, params: VEC_P, outcome: { index: 9 }, rarity: { index: 0 } };
+    eq(L.cardHashFromCard(oldCard), mu.cardHashFromCard(oldCard), 'cardHashFromCard 缺字段 与 mu 逐字节一致');
+    const newCard = Object.assign({}, oldCard, { cardShape: 3 });
+    eq(L.cardHashFromCard(newCard), mu.cardHashFromCard(newCard), 'cardHashFromCard shape=3 与 mu 逐字节一致');
+    const r = L.recomputeWithOps(T12.blockHash, T12.ops);
+    eq(L.cardHashOf(T12.blockHash, r.card.params, 9, 0, 2),
+      mu.cardHashOf(T12.blockHash, r.card.params, 9, 0, 2),
+      '#12 干预参数 shape=2 与 mu 逐字节一致');
+    eq(L.cardHashOf(T12.blockHash, r.card.params, 9, 0, 3),
+      mu.cardHashOf(T12.blockHash, r.card.params, 9, 0, 3),
+      '#12 干预参数 shape=3 与 mu 逐字节一致');
+  }
 }
 
 section('确定性');
