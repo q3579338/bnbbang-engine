@@ -1,5 +1,9 @@
 # bnbbang-engine
 
+> **BNBBANG** — every BNB Chain block hash is a universe. Site: **https://bnbbang.com** · Chain: **BNB Chain (BSC mainnet, chainId 56)** · NFT `MirrorUniverse` [`0x1661086ee19cc8ef938e98ad9058e74fa870aa78`](https://bscscan.com/address/0x1661086ee19cc8ef938e98ad9058e74fa870aa78) · Contracts, economy and tests: [bnbbang-economy](https://github.com/q3579338/bnbbang-economy)
+>
+> This repository is the AGPL-3.0 derivation engine: it reads a BNB block hash as 23 physical constants, runs the cosmology from the singularity to heat death, and reports one of twelve endings. `node tools/recompute.js <blockhash>` rebuilds a universe from its hash; `node tools/verify-onchain.js <tokenId>` byte-diffs that result against the NFT on BSC. Zero dependencies, Node ≥ 18.
+
 BNBBANG 镜像宇宙的推导链，独立成仓：**一个 BNB 区块哈希 → 创世参数 → 结局 / 维度 / 稀有度 → cardHash**。
 零依赖，Node ≥ 18。
 
